@@ -1,0 +1,283 @@
+/**
+ * 国内优先配置模板
+ * 
+ * 适用场景：
+ * - 数据不出境要求
+ * - 优先使用国内大模型
+ * - 敏感数据自动路由到本地
+ * 
+ * 使用方法：
+ * cp models-security.cn.json5 ~/.openclaw/openclaw-custom/models-security.json5
+ */
+
+{
+  // ============================================
+  // 基础设置
+  // ============================================
+  
+  // 默认优先使用国内模型
+  defaultRegion: 'cn',
+  
+  // 调试模式（开发时设为 true）
+  debug: false,
+  
+  // ============================================
+  // 模型白名单（只允许这些模型）
+  // ============================================
+  
+  allowedModels: [
+    // 国内模型
+    'moonshot/kimi-k2.5',           // Moonshot Kimi
+    'moonshot/kimi-k2-thinking',    // Kimi Thinking
+    'kimi-coding/k2p5',             // Kimi Coding（编程专用）
+    'zai/glm-5',                    // 智谱 GLM-5
+    'zai/glm-5-air',                // GLM-5 Air
+    'qianfan/ernie-4',              // 百度文心
+    'qianfan/ernie-speed',          // 文心 Speed
+    'opencode/claude-opus-4-6',     // OpenCode Claude
+    'opencode-go/kimi-k2.5',        // OpenCode Go
+    
+    // 本地模型（备用）- Qwen 3.5
+    'ollama/qwen3.5:9b',            // Qwen 3.5 9B - 主力
+    'ollama/qwen3.5:0.8b',          // Qwen 3.5 0.8B - 轻量
+    'ollama/deepseek-coder',        // DeepSeek Coder
+    'lmstudio/*'                    // LM Studio 所有模型
+  ],
+  
+  // ============================================
+  // 故障转移链（按优先级排序）
+  // ============================================
+  
+  failover: {
+    enabled: true,
+    chain: [
+      { model: 'moonshot/kimi-k2.5', region: 'cn' },
+      { model: 'zai/glm-5', region: 'cn' },
+      { model: 'ollama/qwen3.5:9b', region: 'local' }
+    ],
+    healthCheck: {
+      interval: 60000,
+      timeout: 5000,
+      failureThreshold: 3,
+      successThreshold: 2
+    },
+    cooldownPeriod: 300000
+  },
+  
+  // ============================================
+  // 区域路由配置
+  // ============================================
+  
+  regionRouting: {
+    cn: {
+      providers: ['moonshot', 'zai', 'qianfan', 'opencode', 'opencode-go'],
+      dataResidencyCheck: true,
+      sensitivePatterns: [
+        '\\d{17}[\\dXx]',                    // 身份证号
+        '\\d{4}[\\s-]?\\d{4}[\\s-]?\\d{4}[\\s-]?\\d{4}',  // 银行卡
+        '1[3-9]\\d{9}',                       // 手机号
+        '护照',
+        '病历',
+        '密码[:：]\\s*\\S+',
+        'api[_-]?key[:：]\\s*\\S+',
+        'secret[:：]\\s*\\S+',
+        'token[:：]\\s*\\S+'
+      ]
+    },
+    local: {
+      providers: ['ollama', 'lmstudio'],
+      endpoints: {
+        ollama: 'http://localhost:11434/v1',
+        lmstudio: 'http://127.0.0.1:1234/v1'
+      }
+    },
+    global: {
+      providers: [],
+      complianceCheck: {
+        allowDataOutbound: false,
+        requireConfirmation: true
+      }
+    }
+  },
+  
+  // ============================================
+  // 内容智能路由
+  // ============================================
+  
+  contentClassification: {
+    enabled: true,
+    rules: [
+      {
+        name: 'sensitive-data',
+        patterns: [
+          '\\d{17}[\\dXx]',
+          '\\d{4}[\\s-]?\\d{4}[\\s-]?\\d{4}[\\s-]?\\d{4}',
+          '身份证',
+          '银行卡',
+          '密码',
+          '密钥'
+        ],
+        action: {
+          type: 'route',
+          target: 'ollama/qwen3.5:9b'  // 敏感数据强制本地处理
+        },
+        priority: 100
+      },
+      {
+        name: 'code-task',
+        patterns: [
+          '编程',
+          '写代码',
+          'debug',
+          'refactor',
+          '代码审查',
+          '代码优化'
+        ],
+        action: {
+          type: 'route',
+          target: 'kimi-coding/k2p5'  // 编程任务用专用模型
+        },
+        priority: 80
+      },
+      {
+        name: 'creative-writing',
+        patterns: [
+          '写小说',
+          '创作故事',
+          '写诗歌',
+          '剧本',
+          '文案'
+        ],
+        action: {
+          type: 'route',
+          target: 'zai/glm-5'
+        },
+        priority: 50
+      },
+      {
+        name: 'simple-chat',
+        patterns: [
+          '^你好$',
+          '^在吗$',
+          '^谢谢$',
+          '^再见$'
+        ],
+        action: {
+          type: 'route',
+          target: 'ollama/qwen3.5:0.8b'  // 简单对话用轻量级模型
+        },
+        priority: 30
+      }
+    ],
+    defaultRoute: {
+      target: 'moonshot/kimi-k2.5'
+    }
+  },
+  
+  // ============================================
+  // 访问控制
+  // ============================================
+  
+  accessControl: {
+    enabled: true,
+    defaultPolicy: 'allowlist',
+    permissions: [
+      {
+        role: 'admin',
+        allow: ['*'],
+        deny: []
+      },
+      {
+        role: 'user',
+        allow: [
+          'moonshot/*',
+          'zai/*',
+          'qianfan/*',
+          'opencode/*',
+          'ollama/*',
+          'lmstudio/*'
+        ],
+        deny: []
+      },
+      {
+        role: 'guest',
+        allow: [
+          'moonshot/kimi-k2.5',
+          'ollama/qwen3.5:0.8b'
+        ],
+        deny: ['*']
+      }
+    ],
+    rateLimit: {
+      enabled: true,
+      default: {
+        windowMs: 60000,
+        maxRequests: 30
+      },
+      byRole: {
+        admin: { windowMs: 60000, maxRequests: 1000 },
+        user: { windowMs: 60000, maxRequests: 100 },
+        guest: { windowMs: 60000, maxRequests: 10 }
+      }
+    }
+  },
+  
+  // ============================================
+  // 凭证管理
+  // ============================================
+  
+  credentials: {
+    encryption: {
+      algorithm: 'aes-256-gcm',
+      keySource: 'env',
+      keyEnvVar: 'OPENCLAW_MASTER_KEY'
+    },
+    rotation: {
+      enabled: false,
+      interval: '90d',
+      alertBefore: '7d'
+    },
+    storage: {
+      type: 'file',
+      file: {
+        path: '~/.openclaw/secure/credentials.enc'
+      }
+    }
+  },
+  
+  // ============================================
+  // 审计日志
+  // ============================================
+  
+  audit: {
+    enabled: true,
+    events: [
+      'model-switch',
+      'model-failover',
+      'policy-violation'
+    ],
+    level: 'info',
+    storage: {
+      type: 'file',
+      file: {
+        path: '~/.openclaw/audit/model-security.log',
+        rotation: {
+          enabled: true,
+          maxSize: '10MB',
+          maxFiles: 10
+        }
+      }
+    },
+    redaction: {
+      enabled: true,
+      fields: ['apiKey', 'token', 'password', 'secret']
+    },
+    retention: {
+      duration: '90d',
+      archive: {
+        enabled: true,
+        path: '~/.openclaw/audit/archive/'
+      }
+    }
+  }
+}

@@ -1,0 +1,435 @@
+{
+  // ============================================================
+  // OpenClaw_Custom 混合模型配置
+  // 优先级: 本地 Ollama > 国内 (Kimi/GLM) > 国际 (Claude/GPT)
+  // 主模型: qwen3.5:9b | 轻量模型: qwen3.5:0.8b
+  // ============================================================
+  
+  // 默认区域设置
+  defaultRegion: 'local',
+  
+  // 允许使用的模型列表
+  allowedModels: [
+    // 本地 Ollama 模型（优先）
+    'ollama/qwen3.5:9b',
+    'ollama/qwen3.5:0.8b',
+    'ollama/qwen3.5:latest',
+    
+    // 国内模型（备用）
+    'moonshot/kimi-k2.5',
+    'moonshot/kimi-k2.5-caching',
+    'zhipu/glm-5',
+    'zhipu/glm-5-flash',
+    
+    // 国际模型（最后选择）
+    'anthropic/claude-sonnet-4-5',
+    'anthropic/claude-opus-4-6',
+    'openai/gpt-4o',
+    'openai/gpt-4o-mini'
+  ],
+  
+  // 明确阻止的模型（可选）
+  blockedModels: [
+    // 旧的或不安全的模型
+    'ollama/llama*',
+    'ollama/qwen2.5*'
+  ],
+  
+  // ============================================================
+  // 故障转移链配置（按优先级排序）
+  // ============================================================
+  failover: {
+    enabled: true,
+    maxRetries: 3,
+    retryDelay: 1000,
+    
+    // 故障转移链：本地优先 -> 国内 -> 国际
+    chain: [
+      // 第1优先级：本地主模型
+      { model: 'ollama/qwen3.5:9b', region: 'local', timeout: 30000 },
+      
+      // 第2优先级：本地轻量模型（快速响应）
+      { model: 'ollama/qwen3.5:0.8b', region: 'local', timeout: 15000 },
+      
+      // 第3优先级：本地最新版
+      { model: 'ollama/qwen3.5:latest', region: 'local', timeout: 30000 },
+      
+      // 第4优先级：国内主模型 - Kimi K2.5
+      { model: 'moonshot/kimi-k2.5', region: 'cn', timeout: 45000 },
+      
+      // 第5优先级：国内备用 - GLM-5
+      { model: 'zhipu/glm-5', region: 'cn', timeout: 45000 },
+      
+      // 第6优先级：国内轻量 - GLM-5 Flash
+      { model: 'zhipu/glm-5-flash', region: 'cn', timeout: 30000 },
+      
+      // 第7优先级：国际平衡型 - Claude Sonnet
+      { model: 'anthropic/claude-sonnet-4-5', region: 'global', timeout: 60000 },
+      
+      // 第8优先级：国际高性能 - Claude Opus
+      { model: 'anthropic/claude-opus-4-6', region: 'global', timeout: 120000 },
+      
+      // 第9优先级：国际快速 - GPT-4o Mini
+      { model: 'openai/gpt-4o-mini', region: 'global', timeout: 30000 }
+    ]
+  },
+  
+  // ============================================================
+  // 区域路由策略
+  // ============================================================
+  regionRouting: {
+    enabled: true,
+    defaultRegion: 'local',
+    
+    // 各区域允许的模型提供者
+    regions: {
+      local: {
+        providers: ['ollama'],
+        preferredModels: ['ollama/qwen3.5:9b', 'ollama/qwen3.5:0.8b']
+      },
+      cn: {
+        providers: ['moonshot', 'zhipu', 'baidu', 'alibaba'],
+        preferredModels: ['moonshot/kimi-k2.5', 'zhipu/glm-5']
+      },
+      global: {
+        providers: ['anthropic', 'openai', 'google'],
+        preferredModels: ['anthropic/claude-sonnet-4-5', 'openai/gpt-4o']
+      }
+    },
+    
+    // 基于请求特征的自动区域选择
+    rules: [
+      {
+        name: 'sensitive-data-cn-only',
+        condition: { type: 'sensitive' },
+        action: { allowRegions: ['local', 'cn'] },
+        priority: 100
+      },
+      {
+        name: 'high-performance-needed',
+        condition: { type: 'complex', tokens: '>4000' },
+        action: { preferredRegions: ['cn', 'global'] },
+        priority: 80
+      }
+    ]
+  },
+  
+  // ============================================================
+  // 内容分类与智能路由
+  // ============================================================
+  contentClassification: {
+    enabled: true,
+    
+    rules: [
+      // ========== 高敏感度：强制本地处理 ==========
+      {
+        name: 'personal-id',
+        patterns: [
+          '\\d{17}[\\dXx]',  // 身份证号
+          '身份证',
+          '身份证号'
+        ],
+        action: { 
+          type: 'route', 
+          target: 'ollama/qwen3.5:0.8b',  // 最轻量的本地模型
+          reason: '身份证信息必须本地处理'
+        },
+        priority: 100
+      },
+      {
+        name: 'financial-data',
+        patterns: [
+          '\\d{16,19}',  // 银行卡号
+          '银行卡',
+          '信用卡',
+          '密码',
+          '验证码',
+          '余额',
+          '转账'
+        ],
+        action: { 
+          type: 'route', 
+          target: 'ollama/qwen3.5:0.8b',
+          reason: '金融数据强制本地处理'
+        },
+        priority: 95
+      },
+      {
+        name: 'contact-info',
+        patterns: [
+          '1[3-9]\\d{9}',  // 手机号
+          '手机',
+          '电话',
+          '邮箱',
+          '地址'
+        ],
+        action: { 
+          type: 'route', 
+          target: 'ollama/qwen3.5:9b',
+          reason: '联系方式建议本地处理'
+        },
+        priority: 90
+      },
+      
+      // ========== 中等敏感度：优先本地，允许国内 ==========
+      {
+        name: 'company-internal',
+        patterns: [
+          '内部',
+          '机密',
+          '保密',
+          '项目代号',
+          '商业计划',
+          '财务数据',
+          '人事信息'
+        ],
+        action: { 
+          type: 'route', 
+          target: 'ollama/qwen3.5:9b',
+          fallback: 'moonshot/kimi-k2.5',
+          reason: '内部信息优先本地处理'
+        },
+        priority: 85
+      },
+      
+      // ========== 编程任务：优先本地，国内备用 ==========
+      {
+        name: 'coding-task',
+        patterns: [
+          '编程',
+          '写代码',
+          'debug',
+          '调试',
+          '算法',
+          '函数',
+          'class',
+          'function',
+          '代码',
+          '程序',
+          '脚本',
+          '开发'
+        ],
+        action: { 
+          type: 'route', 
+          target: 'ollama/qwen3.5:9b',
+          fallback: 'moonshot/kimi-k2.5-caching',
+          reason: '编程任务使用本地模型，复杂任务可用Kimi'
+        },
+        priority: 70
+      },
+      
+      // ========== 创意写作：使用 Kimi K2.5 ==========
+      {
+        name: 'creative-writing',
+        patterns: [
+          '写一篇',
+          '写故事',
+          '创作',
+          '小说',
+          '诗歌',
+          '文案',
+          '润色',
+          '扩写',
+          '续写',
+          '改写'
+        ],
+        action: { 
+          type: 'route', 
+          target: 'moonshot/kimi-k2.5',
+          fallback: 'ollama/qwen3.5:9b',
+          reason: '创意写作使用Kimi K2.5获得更好效果'
+        },
+        priority: 60
+      },
+      
+      // ========== 分析任务：可用国内模型 ==========
+      {
+        name: 'analysis-task',
+        patterns: [
+          '分析',
+          '总结',
+          '归纳',
+          '提取',
+          '分类',
+          '评估',
+          '对比',
+          '研究',
+          '报告'
+        ],
+        action: { 
+          type: 'route', 
+          target: 'moonshot/kimi-k2.5',
+          fallback: 'ollama/qwen3.5:9b',
+          reason: '分析任务可用Kimi获得更好效果'
+        },
+        priority: 50
+      },
+      
+      // ========== 通用对话：默认本地 ==========
+      {
+        name: 'general-chat',
+        patterns: [
+          '你好',
+          '您好',
+          '在吗',
+          '谢谢',
+          '请问'
+        ],
+        action: { 
+          type: 'route', 
+          target: 'ollama/qwen3.5:9b',
+          reason: '通用对话使用本地模型'
+        },
+        priority: 10
+      }
+    ]
+  },
+  
+  // ============================================================
+  // 访问控制
+  // ============================================================
+  accessControl: {
+    enabled: true,
+    
+    permissions: [
+      {
+        role: 'user',
+        allow: [
+          'ollama/*',
+          'moonshot/kimi-k2.5',
+          'moonshot/kimi-k2.5-caching',
+          'zhipu/glm-5',
+          'zhipu/glm-5-flash'
+        ],
+        deny: [
+          'anthropic/*',
+          'openai/*'
+        ]
+      },
+      {
+        role: 'developer',
+        allow: [
+          'ollama/*',
+          'moonshot/*',
+          'zhipu/*',
+          'anthropic/claude-sonnet-4-5',
+          'openai/gpt-4o-mini'
+        ],
+        deny: []
+      },
+      {
+        role: 'admin',
+        allow: ['*'],
+        deny: []
+      }
+    ]
+  },
+  
+  // ============================================================
+  // 凭证配置（使用环境变量引用）
+  // ============================================================
+  credentials: {
+    storage: 'file',
+    encryption: true,
+    
+    providers: {
+      moonshot: {
+        type: 'api-key',
+        keyRef: 'env:MOONSHOT_API_KEY'
+      },
+      zhipu: {
+        type: 'api-key',
+        keyRef: 'env:ZHIPU_API_KEY'
+      },
+      anthropic: {
+        type: 'api-key',
+        keyRef: 'env:ANTHROPIC_API_KEY'
+      },
+      openai: {
+        type: 'api-key',
+        keyRef: 'env:OPENAI_API_KEY'
+      }
+    }
+  },
+  
+  // ============================================================
+  // 审计日志
+  // ============================================================
+  audit: {
+    enabled: true,
+    level: 'info',
+    
+    events: [
+      'model-switch',
+      'policy-violation',
+      'failover-triggered',
+      'credential-access'
+    ],
+    
+    storage: {
+      type: 'file',
+      path: '~/.openclaw/openclaw-custom/audit.log'
+    },
+    
+    retention: {
+      days: 30,
+      maxSize: '100MB'
+    }
+  },
+  
+  // ============================================================
+  // 健康检查
+  // ============================================================
+  healthCheck: {
+    enabled: true,
+    interval: 60000,  // 60秒检查一次
+    
+    checks: [
+      {
+        model: 'ollama/qwen3.5:9b',
+        timeout: 10000,
+        enabled: true
+      },
+      {
+        model: 'ollama/qwen3.5:0.8b',
+        timeout: 5000,
+        enabled: true
+      },
+      {
+        model: 'moonshot/kimi-k2.5',
+        timeout: 15000,
+        enabled: true
+      },
+      {
+        model: 'zhipu/glm-5',
+        timeout: 15000,
+        enabled: true
+      }
+    ]
+  },
+  
+  // ============================================================
+  // 性能优化
+  // ============================================================
+  performance: {
+    // 模型预热
+    warmup: {
+      enabled: true,
+      models: ['ollama/qwen3.5:9b', 'ollama/qwen3.5:0.8b']
+    },
+    
+    // 连接池
+    connectionPool: {
+      enabled: true,
+      maxConnections: 5,
+      idleTimeout: 300000  // 5分钟
+    },
+    
+    // 响应缓存
+    cache: {
+      enabled: true,
+      ttl: 300,  // 5分钟
+      maxSize: 100
+    }
+  }
+}

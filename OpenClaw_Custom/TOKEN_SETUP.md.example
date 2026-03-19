@@ -1,0 +1,122 @@
+# OpenClaw Custom 安全访问指南
+
+> ⚠️ 重要：如果你看到本文件名是 TOKEN_SETUP.md.example，请复制为 TOKEN_SETUP.md 并填入你的实际 Token。
+> 请勿将包含真实 Token 的 TOKEN_SETUP.md 上传到 Git！
+
+---
+
+## 🔐 安全配置已启用
+
+Gateway 已配置以下安全措施：
+
+| 配置项 | 状态 | 说明 |
+|--------|------|------|
+| **绑定地址** | ✅ 安全 | 仅监听 127.0.0.1（loopback），外部无法访问 |
+| **运行模式** | ✅ 安全 | gateway.mode=local |
+| **认证方式** | ✅ 安全 | Token 认证已启用 |
+| **危险配置** | ✅ 无 | 未启用 allowInsecureAuth 或 dangerouslyDisableDeviceAuth |
+
+---
+
+## 📞 访问地址
+
+### Web UI 访问
+```
+http://127.0.0.1:55443/
+```
+
+### 直接访问（带 Token）
+```
+http://127.0.0.1:55443/?token=YOUR_TOKEN_HERE
+```
+
+### WebSocket 连接
+```
+ws://127.0.0.1:55443/
+```
+
+---
+
+## 🔑 认证 Token
+
+### 从配置文件读取
+Token 存储在：`C:\Users\[USERNAME]\.openclaw\openclaw.json`
+
+使用以下命令查看（Token 会被打码）：
+```powershell
+cd d:\mySource\cusor-proj\openclaw
+node openclaw.mjs config get gateway.auth.token
+```
+
+### 环境变量方式
+设置环境变量：
+```powershell
+$env:OPENCLAW_GATEWAY_TOKEN="YOUR_TOKEN_HERE"
+```
+
+---
+
+## 🚀 快速启动/停止
+
+### 查看状态
+```powershell
+cd d:\mySource\cusor-proj\openclaw\OpenClaw_Custom
+node scripts/dev.mjs status
+```
+
+### 启动 Gateway（安全模式）
+```powershell
+cd d:\mySource\cusor-proj\openclaw\OpenClaw_Custom
+node scripts/dev.mjs start
+```
+
+### 停止 Gateway
+```powershell
+cd d:\mySource\cusor-proj\openclaw\OpenClaw_Custom
+node scripts/dev.mjs stop
+```
+
+### 重启 Gateway
+```powershell
+cd d:\mySource\cusor-proj\openclaw\OpenClaw_Custom
+node scripts/dev.mjs restart
+```
+
+---
+
+## 🔒 更换 Token
+
+如果你想更换 Token，执行：
+
+```powershell
+cd d:\mySource\cusor-proj\openclaw
+
+# 生成新 Token
+$newToken = -join ((65..90) + (97..122) + (48..57) | Get-Random -Count 32 | ForEach-Object { [char]$_ })
+
+# 设置新 Token
+node openclaw.mjs config set gateway.auth.token $newToken
+
+# 重启 Gateway 生效
+node scripts/dev.mjs restart
+```
+
+---
+
+## ⚠️ 安全提示
+
+1. **不要分享 Token** - 任何拥有 Token 的人都可以访问你的 Gateway
+2. **保护配置文件** - `~/.openclaw/openclaw.json` 包含敏感信息，请保存在安全的位置
+3. **仅本地访问** - Gateway 绑定在 127.0.0.1，无法从其他设备访问
+4. **不要使用 --allow-unconfigured** - 我们已移除此参数，确保配置正确加载
+
+---
+
+## 📝 配置备份
+
+配置文件自动备份在：
+- `C:\Users\[USERNAME]\.openclaw\openclaw.json.bak` (上一版本)
+
+---
+
+*最后更新：2026-03-18*

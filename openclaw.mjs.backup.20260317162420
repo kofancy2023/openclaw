@@ -1,6 +1,4 @@
 #!/usr/bin/env node
-// OpenClaw Custom Security Layer - Auto-injected by integration script
-import './OpenClaw_Custom/dist/index.js';
 
 import module from "node:module";
 import { fileURLToPath } from "node:url";

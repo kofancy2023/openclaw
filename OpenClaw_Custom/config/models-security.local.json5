@@ -1,0 +1,266 @@
+/**
+ * 本地优先配置模板
+ * 
+ * 适用场景：
+ * - 完全离线使用
+ * - 数据隐私要求极高
+ * - 无网络环境
+ * 
+ * 前置要求：
+ * - 已安装 Ollama 或 LM Studio
+ * - 已下载本地模型
+ * 
+ * 使用方法：
+ * cp models-security.local.json5 ~/.openclaw/openclaw-custom/models-security.json5
+ */
+
+{
+  // ============================================
+  // 基础设置
+  // ============================================
+  
+  // 强制使用本地模型
+  defaultRegion: 'local',
+  
+  debug: false,
+  
+  // ============================================
+  // 只允许本地模型
+  // ============================================
+  
+  allowedModels: [
+    'ollama/*',
+    'lmstudio/*',
+    'vllm/*'
+  ],
+  
+  // 禁止所有云端模型
+  blockedModels: [
+    'moonshot/*',
+    'zai/*',
+    'qianfan/*',
+    'anthropic/*',
+    'openai/*',
+    'google/*',
+    '*/*'
+  ],
+  
+  // ============================================
+  // 故障转移链（只在本地模型间切换）
+  // ============================================
+  
+  failover: {
+    enabled: true,
+    chain: [
+      { model: 'ollama/qwen3.5:9b', region: 'local' },
+      { model: 'ollama/qwen3.5:0.8b', region: 'local' },
+      { model: 'ollama/deepseek-coder', region: 'local' }
+    ],
+    healthCheck: {
+      interval: 30000,  // 本地模型检查更频繁
+      timeout: 3000,
+      failureThreshold: 2,
+      successThreshold: 1
+    },
+    cooldownPeriod: 60000
+  },
+  
+  // ============================================
+  // 本地模型端点配置
+  // ============================================
+  
+  regionRouting: {
+    cn: {
+      providers: [],
+      dataResidencyCheck: false,
+      sensitivePatterns: []
+    },
+    local: {
+      providers: ['ollama', 'lmstudio', 'vllm'],
+      endpoints: {
+        // Ollama 默认端点
+        ollama: 'http://localhost:11434/v1',
+        
+        // LM Studio 默认端点
+        lmstudio: 'http://127.0.0.1:1234/v1',
+        
+        // vLLM 默认端点
+        vllm: 'http://localhost:8000/v1'
+      }
+    },
+    global: {
+      providers: [],
+      complianceCheck: {
+        allowDataOutbound: false,
+        requireConfirmation: true
+      }
+    }
+  },
+  
+  // ============================================
+  // 本地模型详细配置
+  // ============================================
+  
+  models: {
+    mode: 'merge',
+    providers: {
+      // Ollama 配置
+      ollama: {
+        baseUrl: 'http://localhost:11434/v1',
+        api: 'openai-completions',
+        models: [
+          {
+            id: 'qwen3.5:9b',
+            name: 'Qwen 3.5 9B',
+            contextWindow: 128000,
+            maxTokens: 4096,
+            reasoning: false,
+            input: ['text'],
+            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
+          },
+          {
+            id: 'qwen3.5:0.8b',
+            name: 'Qwen 3.5 0.8B',
+            contextWindow: 32000,
+            maxTokens: 4096,
+            reasoning: false,
+            input: ['text'],
+            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
+          },
+          {
+            id: 'deepseek-coder',
+            name: 'DeepSeek Coder',
+            contextWindow: 64000,
+            maxTokens: 4096,
+            reasoning: false,
+            input: ['text'],
+            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
+          }
+        ]
+      },
+      
+      // LM Studio 配置
+      lmstudio: {
+        baseUrl: 'http://127.0.0.1:1234/v1',
+        api: 'openai-responses',
+        models: [
+          {
+            id: 'minimax-m2.5-gs32',
+            name: 'MiniMax M2.5',
+            contextWindow: 196608,
+            maxTokens: 8192,
+            reasoning: false,
+            input: ['text'],
+            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
+          }
+        ]
+      }
+    }
+  },
+  
+  // ============================================
+  // 内容分类（本地模型间的智能路由）
+  // ============================================
+  
+  contentClassification: {
+    enabled: true,
+    rules: [
+      {
+        name: 'code-task',
+        patterns: [
+          '编程',
+          '写代码',
+          'debug',
+          'refactor',
+          '代码审查'
+        ],
+        action: {
+          type: 'route',
+          target: 'ollama/deepseek-coder'  // 编程用 DeepSeek Coder
+        },
+        priority: 80
+      },
+      {
+        name: 'simple-task',
+        patterns: [
+          '^你好$',
+          '^谢谢$',
+          '^再见$'
+        ],
+        action: {
+          type: 'route',
+          target: 'ollama/qwen3.5:0.8b'  // 简单任务用轻量级模型
+        },
+        priority: 50
+      }
+    ],
+    defaultRoute: {
+      target: 'ollama/qwen3.5:9b'
+    }
+  },
+  
+  // ============================================
+  // 访问控制
+  // ============================================
+  
+  accessControl: {
+    enabled: true,
+    defaultPolicy: 'allowlist',
+    permissions: [
+      {
+        role: 'user',
+        allow: ['ollama/*', 'lmstudio/*', 'vllm/*'],
+        deny: []
+      }
+    ],
+    rateLimit: {
+      enabled: true,
+      default: {
+        windowMs: 60000,
+        maxRequests: 100  // 本地模型可以设置更高的限制
+      }
+    }
+  },
+  
+  // ============================================
+  // 凭证管理
+  // ============================================
+  
+  credentials: {
+    encryption: {
+      algorithm: 'aes-256-gcm',
+      keySource: 'env',
+      keyEnvVar: 'OPENCLAW_MASTER_KEY'
+    },
+    storage: {
+      type: 'file',
+      file: {
+        path: '~/.openclaw/secure/credentials.enc'
+      }
+    }
+  },
+  
+  // ============================================
+  // 审计日志
+  // ============================================
+  
+  audit: {
+    enabled: true,
+    events: ['model-switch'],
+    level: 'info',
+    storage: {
+      type: 'file',
+      file: {
+        path: '~/.openclaw/audit/model-security.log',
+        rotation: {
+          enabled: true,
+          maxSize: '10MB',
+          maxFiles: 5
+        }
+      }
+    },
+    retention: {
+      duration: '30d'
+    }
+  }
+}

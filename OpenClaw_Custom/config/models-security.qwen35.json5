@@ -1,0 +1,252 @@
+/**
+ * Qwen 3.5 专用配置模板
+ * 
+ * 适用场景：
+ * - 本地运行 Qwen 3.5 系列模型
+ * - 支持 qwen3.5:9b（主力）和 qwen3.5:0.8b（轻量）
+ * 
+ * 前置要求：
+ * - 已安装 Ollama
+ * - 已拉取 qwen3.5:9b 和/或 qwen3.5:0.8b
+ * 
+ * 使用方法：
+ * cp models-security.qwen35.json5 ~/.openclaw/openclaw-custom/models-security.json5
+ */
+
+{
+  // ============================================
+  // 基础设置
+  // ============================================
+  
+  // 强制使用本地模型
+  defaultRegion: 'local',
+  
+  debug: false,
+  
+  // ============================================
+  // 只允许 Qwen 3.5 系列
+  // ============================================
+  
+  allowedModels: [
+    'ollama/qwen3.5:9b',      // Qwen 3.5 9B - 主力模型
+    'ollama/qwen3.5:0.8b',    // Qwen 3.5 0.8B - 轻量级
+    'ollama/qwen3.5:latest'   // 最新版本
+  ],
+  
+  // 禁止所有云端模型
+  blockedModels: [
+    'moonshot/*',
+    'zai/*',
+    'qianfan/*',
+    'anthropic/*',
+    'openai/*',
+    'google/*',
+    'ollama/llama*',
+    'ollama/qwen2.5*'  // 禁用 qwen2.5 系列，只保留 qwen3.5
+  ],
+  
+  // ============================================
+  // 故障转移链（9b 优先，0.8b 备用）
+  // ============================================
+  
+  failover: {
+    enabled: true,
+    chain: [
+      { model: 'ollama/qwen3.5:9b', region: 'local' },     // 首选：9B 主力
+      { model: 'ollama/qwen3.5:latest', region: 'local' }, // 备选：最新版
+      { model: 'ollama/qwen3.5:0.8b', region: 'local' }    // 最后：0.8B 轻量
+    ],
+    healthCheck: {
+      interval: 30000,  // 本地模型检查更频繁
+      timeout: 3000,
+      failureThreshold: 2,
+      successThreshold: 1
+    },
+    cooldownPeriod: 60000
+  },
+  
+  // ============================================
+  // 本地模型端点配置
+  // ============================================
+  
+  regionRouting: {
+    cn: {
+      providers: [],
+      dataResidencyCheck: false,
+      sensitivePatterns: []
+    },
+    local: {
+      providers: ['ollama'],
+      endpoints: {
+        ollama: 'http://localhost:11434/v1'
+      }
+    },
+    global: {
+      providers: [],
+      complianceCheck: {
+        allowDataOutbound: false,
+        requireConfirmation: true
+      }
+    }
+  },
+  
+  // ============================================
+  // Qwen 3.5 详细配置
+  // ============================================
+  
+  models: {
+    mode: 'merge',
+    providers: {
+      ollama: {
+        baseUrl: 'http://localhost:11434/v1',
+        api: 'openai-completions',
+        models: [
+          {
+            id: 'qwen3.5:9b',
+            name: 'Qwen 3.5 9B',
+            contextWindow: 128000,
+            maxTokens: 4096,
+            reasoning: false,
+            input: ['text'],
+            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
+          },
+          {
+            id: 'qwen3.5:0.8b',
+            name: 'Qwen 3.5 0.8B',
+            contextWindow: 32000,
+            maxTokens: 4096,
+            reasoning: false,
+            input: ['text'],
+            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
+          },
+          {
+            id: 'qwen3.5:latest',
+            name: 'Qwen 3.5 Latest',
+            contextWindow: 128000,
+            maxTokens: 4096,
+            reasoning: false,
+            input: ['text'],
+            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
+          }
+        ]
+      }
+    }
+  },
+  
+  // ============================================
+  // 智能路由配置
+  // ============================================
+  
+  contentClassification: {
+    enabled: true,
+    rules: [
+      {
+        name: 'simple-chat',
+        // 简单对话使用 0.8B（响应快，资源占用低）
+        patterns: [
+          '^你好$',
+          '^在吗$',
+          '^谢谢$',
+          '^再见$',
+          '^好的$',
+          '^ok$',
+          '^嗯$'
+        ],
+        action: {
+          type: 'route',
+          target: 'ollama/qwen3.5:0.8b'
+        },
+        priority: 90
+      },
+      {
+        name: 'complex-task',
+        // 复杂任务使用 9B（能力强）
+        patterns: [
+          '分析',
+          '总结',
+          '解释',
+          '详细',
+          '复杂',
+          '编程',
+          '代码',
+          '写',
+          '创作',
+          '设计',
+          '方案'
+        ],
+        action: {
+          type: 'route',
+          target: 'ollama/qwen3.5:9b'
+        },
+        priority: 80
+      },
+      {
+        name: 'sensitive-data',
+        // 敏感数据本地处理（任何本地版本都可以）
+        patterns: [
+          '\\d{17}[\\dXx]',  // 身份证号
+          '银行卡',
+          '密码',
+          '密钥',
+          'token',
+          'secret'
+        ],
+        action: {
+          type: 'route',
+          target: 'ollama/qwen3.5:0.8b'  // 敏感数据也用本地，轻量版即可
+        },
+        priority: 100
+      }
+    ],
+    defaultRoute: {
+      target: 'ollama/qwen3.5:9b'  // 默认使用 9B
+    }
+  },
+  
+  // ============================================
+  // 访问控制
+  // ============================================
+  
+  accessControl: {
+    enabled: true,
+    defaultPolicy: 'allowlist',
+    permissions: [
+      {
+        role: 'user',
+        allow: ['ollama/qwen3.5:*'],
+        deny: []
+      }
+    ],
+    rateLimit: {
+      enabled: true,
+      default: {
+        windowMs: 60000,
+        maxRequests: 100  // 本地模型可以设置更高的限制
+      }
+    }
+  },
+  
+  // ============================================
+  // 审计日志
+  // ============================================
+  
+  audit: {
+    enabled: true,
+    events: ['model-switch'],
+    level: 'info',
+    storage: {
+      type: 'file',
+      file: {
+        path: '~/.openclaw/audit/model-security.log',
+        rotation: {
+          enabled: true,
+          maxSize: '10MB',
+          maxFiles: 5
+        }
+      }
+    },
+    retention: {
+      duration: '30d'
+    }
+  }
+}

@@ -1,0 +1,51 @@
+# OpenClaw Custom - 敏感配置排除
+# 这些文件包含密钥、Token 和其他敏感信息，不应上传到 Git
+
+# OpenClaw 配置文件（包含 Token、API Keys 等）
+*.json.bak
+openclaw.json
+
+# 环境变量文件
+.env
+.env.*
+!.env.example
+
+# Token 和凭证文件
+*.token
+*.key
+*.pem
+*.p12
+*.pfx
+
+# 日志文件（可能包含敏感信息）
+*.log
+logs/
+tmp/
+temp/
+
+# 会话和缓存
+sessions/
+cache/
+
+# IDE 和编辑器配置
+.vscode/settings.json
+.idea/
+*.swp
+*.swo
+*~
+
+# 操作系统文件
+.DS_Store
+Thumbs.db
+
+# 不要忽略本文件
+!.gitignore
+!README.md
+!USER_GUIDE.md
+!MODEL_CONFIGURATION.md
+
+# 敏感的 Token 设置文档（包含实际 Token）
+TOKEN_SETUP.md
+
+# 但保留模板文件
+!TOKEN_SETUP.md.example
