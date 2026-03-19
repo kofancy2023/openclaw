@@ -185,14 +185,93 @@ export class SecureString {
   }
   
   /**
-   * 获取或生成主密钥
+   * 获取主密钥
+   * @throws {Error} 如果主密钥未设置，抛出错误
    */
   private static async getMasterKey(): Promise<Buffer> {
     if (!SecureString.masterKey) {
-      // 生成临时密钥（实际应该存储在安全位置）
-      SecureString.masterKey = SecureString.generateMasterKey();
+      throw new Error(
+        'Master key not initialized. ' +
+        'Call SecureString.setMasterKey() with a 32-byte key before using encryption. ' +
+        'For first-time setup, use SecureString.generateMasterKey() to create a key ' +
+        'and persist it securely.'
+      );
     }
     return SecureString.masterKey;
+  }
+
+  /**
+   * 从环境变量或文件加载主密钥
+   * @param options 加载选项
+   */
+  static async loadMasterKey(options: {
+    envVar?: string;
+    filePath?: string;
+    key?: Buffer | string;
+  } = {}): Promise<void> {
+    // 优先级: 直接传入 > 环境变量 > 文件
+    let keyMaterial: Buffer | string | undefined;
+    let keySource: string = 'unknown';
+
+    if (options.key) {
+      keyMaterial = options.key;
+      keySource = 'parameter';
+    } else if (options.envVar && process.env[options.envVar]) {
+      keyMaterial = process.env[options.envVar];
+      keySource = `environment variable ${options.envVar}`;
+    } else if (options.filePath) {
+      const { readFile } = await import('fs/promises');
+      const expandedPath = options.filePath.replace(/^~/, process.env.HOME || process.env.USERPROFILE || '');
+      try {
+        keyMaterial = await readFile(expandedPath, 'utf-8');
+        keyMaterial = keyMaterial.trim();
+        keySource = `file ${expandedPath}`;
+      } catch (error) {
+        throw new Error(`Failed to read master key from ${expandedPath}: ${error}`);
+      }
+    }
+
+    if (!keyMaterial) {
+      throw new Error(
+        'Master key not found. Provide it via: ' +
+        '1) options.key parameter, ' +
+        '2) environment variable (set options.envVar), or ' +
+        '3) key file (set options.filePath)'
+      );
+    }
+
+    // 处理字符串类型的密钥
+    let keyBuffer: Buffer;
+    if (typeof keyMaterial === 'string') {
+      // 尝试解析为 base64
+      try {
+        keyBuffer = Buffer.from(keyMaterial, 'base64');
+        if (keyBuffer.length !== 32) {
+          // 如果不是32字节，使用 SHA-256 派生
+          keyBuffer = crypto.createHash('sha256').update(keyMaterial).digest();
+        }
+      } catch {
+        keyBuffer = crypto.createHash('sha256').update(keyMaterial).digest();
+      }
+    } else {
+      keyBuffer = keyMaterial;
+    }
+
+    if (keyBuffer.length !== 32) {
+      throw new Error(`Invalid master key length: ${keyBuffer.length} bytes, expected 32`);
+    }
+
+    SecureString.setMasterKey(keyBuffer);
+
+    // 安全擦除原始密钥材料（如果是字符串）
+    if (typeof keyMaterial === 'string') {
+      const len = keyMaterial.length;
+      for (let i = 0; i < len; i++) {
+        (keyMaterial as any)[i] = '0';
+      }
+    }
+
+    console.log(`[SecureString] Master key loaded from ${keySource}`);
   }
   
   /**

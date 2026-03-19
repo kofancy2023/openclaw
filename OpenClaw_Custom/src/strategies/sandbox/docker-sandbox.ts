@@ -3,6 +3,7 @@
  * 提供隔离执行环境
  */
 
+import path from 'path';
 import { 
   ISandbox, 
   SandboxOptions, 
@@ -343,6 +344,9 @@ export class DockerSandbox implements ISandbox {
       throw new Error(`Container not found: ${instance.id}`);
     }
     
+    // 验证路径安全性
+    this.validatePath(filePath);
+    
     const output = await this.dockerCommandOutput([
       'exec',
       container.id,
@@ -354,7 +358,46 @@ export class DockerSandbox implements ISandbox {
   }
   
   /**
+   * 验证文件路径安全性
+   * 防止路径遍历和命令注入
+   */
+  private validatePath(filePath: string): void {
+    // 检查路径遍历攻击
+    const normalizedPath = path.posix.normalize(filePath);
+    
+    // 禁止包含 null 字节
+    if (filePath.includes('\0')) {
+      throw new Error('Invalid file path: contains null byte');
+    }
+    
+    // 禁止路径遍历（以 .. 开头或包含 ../）
+    if (normalizedPath.startsWith('..') || normalizedPath.includes('../')) {
+      // 允许绝对路径，但需要检查
+      if (!path.isAbsolute(filePath)) {
+        throw new Error('Invalid file path: path traversal detected');
+      }
+    }
+    
+    // 禁止 shell 特殊字符
+    const dangerousChars = /[;&|`$(){}[\]\<>\n\r]/;
+    if (dangerousChars.test(filePath)) {
+      throw new Error('Invalid file path: contains dangerous characters');
+    }
+  }
+  
+  /**
+   * Shell 参数转义
+   * 用于将用户输入安全地传递给 shell 命令
+   */
+  private shellEscape(arg: string): string {
+    // 使用单引号包裹，并处理内部的单引号
+    // ' -> '\'' (结束引号，插入转义的单引号，重新开始引号)
+    return "'" + arg.replace(/'/g, "'\"'\"'") + "'";
+  }
+
+  /**
    * 写入文件
+   * 使用安全的参数传递，避免命令注入
    */
   async writeFile(
     instance: SandboxInstance,
@@ -367,29 +410,60 @@ export class DockerSandbox implements ISandbox {
       throw new Error(`Container not found: ${instance.id}`);
     }
     
+    // 验证路径安全性
+    this.validatePath(filePath);
+    
     const { spawn } = await import('child_process');
     
+    // 方法1: 使用 tee 命令，路径经过转义
+    const escapedPath = this.shellEscape(filePath);
     const writeProcess = spawn(this.config.dockerPath, [
       'exec',
       '-i',
       container.id,
       'sh',
       '-c',
-      `cat > ${filePath}`
-    ]);
+      `tee ${escapedPath} > /dev/null`
+    ], {
+      // 安全选项：限制 shell 环境
+      env: {},
+      // 隐藏命令窗口（Windows）
+      windowsHide: true
+    });
     
     return new Promise((resolve, reject) => {
+      let stderr = '';
+      
+      writeProcess.stderr?.on('data', (data) => {
+        stderr += data.toString();
+      });
+      
       writeProcess.on('close', (code) => {
         if (code === 0) {
           resolve();
         } else {
-          reject(new Error(`Failed to write file: exit code ${code}`));
+          reject(new Error(`Failed to write file: exit code ${code}, stderr: ${stderr}`));
         }
       });
       
       writeProcess.on('error', reject);
       
-      writeProcess.stdin?.write(content);
+      // 设置超时，防止死锁
+      const timeout = setTimeout(() => {
+        writeProcess.kill('SIGTERM');
+        reject(new Error('Write file operation timed out'));
+      }, 30000);
+      
+      writeProcess.on('close', () => {
+        clearTimeout(timeout);
+      });
+      
+      // 写入内容
+      if (Buffer.isBuffer(content)) {
+        writeProcess.stdin?.write(content);
+      } else {
+        writeProcess.stdin?.write(content, 'utf8');
+      }
       writeProcess.stdin?.end();
     });
   }

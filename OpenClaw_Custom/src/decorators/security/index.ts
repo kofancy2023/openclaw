@@ -13,7 +13,9 @@ export {
 
 export {
   TokenBucketRateLimiter,
+  FileRateLimitStorage,
   type RateLimitConfig,
   type RequestContext,
-  type RateLimitResult
+  type RateLimitResult,
+  type RateLimitStateStorage
 } from './rate-limiter.js';

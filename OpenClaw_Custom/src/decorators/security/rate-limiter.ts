@@ -4,6 +4,16 @@
  */
 
 import { ISecurityEventBus } from '../../core/interfaces/security.js';
+import { readFile, writeFile, mkdir } from 'fs/promises';
+import { dirname } from 'path';
+
+/**
+ * 速率限制状态存储接口
+ */
+export interface RateLimitStateStorage {
+  save(state: Map<string, RateLimitState>): Promise<void>;
+  load(): Promise<Map<string, RateLimitState>>;
+}
 
 /**
  * 速率限制配置
@@ -45,6 +55,124 @@ interface RateLimitState {
 }
 
 /**
+ * 可序列化的状态数据
+ */
+interface SerializableState {
+  key: string;
+  tokens: number;
+  lastRefill: number;
+  blockedUntil?: number;
+  violationCount: number;
+}
+
+/**
+ * 文件存储实现
+ */
+export class FileRateLimitStorage implements RateLimitStateStorage {
+  private filePath: string;
+  private saveInterval: number;
+  private lastSave: number = 0;
+  private dirty = false;
+  private saveTimer?: NodeJS.Timeout;
+
+  constructor(filePath: string, saveIntervalMs = 5000) {
+    this.filePath = filePath;
+    this.saveInterval = saveIntervalMs;
+  }
+
+  async save(state: Map<string, RateLimitState>): Promise<void> {
+    this.dirty = true;
+    
+    const now = Date.now();
+    // 限制保存频率
+    if (now - this.lastSave < this.saveInterval) {
+      // 延迟保存
+      if (!this.saveTimer) {
+        this.saveTimer = setTimeout(() => {
+          this.doSave(state);
+        }, this.saveInterval);
+      }
+      return;
+    }
+
+    await this.doSave(state);
+  }
+
+  private async doSave(state: Map<string, RateLimitState>): Promise<void> {
+    if (!this.dirty) return;
+
+    try {
+      const data: SerializableState[] = [];
+      const now = Date.now();
+
+      for (const [key, value] of state) {
+        // 只保存未过期的状态
+        if (value.blockedUntil && value.blockedUntil < now) {
+          continue;
+        }
+        data.push({ key, ...value });
+      }
+
+      const dir = dirname(this.filePath);
+      await mkdir(dir, { recursive: true });
+
+      const tempFile = `${this.filePath}.tmp`;
+      await writeFile(tempFile, JSON.stringify(data, null, 2));
+      
+      // 原子重命名
+      const { rename } = await import('fs/promises');
+      await rename(tempFile, this.filePath);
+
+      this.lastSave = Date.now();
+      this.dirty = false;
+    } catch (error) {
+      console.error('[FileRateLimitStorage] Failed to save:', error);
+    } finally {
+      this.saveTimer = undefined;
+    }
+  }
+
+  async load(): Promise<Map<string, RateLimitState>> {
+    try {
+      const { existsSync } = await import('fs');
+      if (!existsSync(this.filePath)) {
+        return new Map();
+      }
+
+      const content = await readFile(this.filePath, 'utf-8');
+      const data: SerializableState[] = JSON.parse(content);
+      const state = new Map<string, RateLimitState>();
+      const now = Date.now();
+
+      for (const item of data) {
+        // 跳过过期的封禁状态
+        if (item.blockedUntil && item.blockedUntil < now) {
+          continue;
+        }
+        const { key, ...rest } = item;
+        state.set(key, rest);
+      }
+
+      return state;
+    } catch (error) {
+      console.error('[FileRateLimitStorage] Failed to load:', error);
+      return new Map();
+    }
+  }
+
+  /**
+   * 立即保存（用于关闭时）
+   */
+  async flush(state: Map<string, RateLimitState>): Promise<void> {
+    if (this.saveTimer) {
+      clearTimeout(this.saveTimer);
+      this.saveTimer = undefined;
+    }
+    await this.doSave(state);
+  }
+}
+
+/**
  * 速率限制结果
  */
 export interface RateLimitResult {
@@ -57,14 +185,22 @@ export interface RateLimitResult {
 
 /**
  * 令牌桶速率限制器
+ * 
+ * 支持持久化存储，重启后状态不丢失
  */
 export class TokenBucketRateLimiter {
   private config: Required<RateLimitConfig>;
   private state: Map<string, RateLimitState> = new Map();
   private eventBus?: ISecurityEventBus;
   private cleanupInterval?: NodeJS.Timeout;
+  private storage?: RateLimitStateStorage;
+  private initialized = false;
   
-  constructor(config: RateLimitConfig, eventBus?: ISecurityEventBus) {
+  constructor(
+    config: RateLimitConfig, 
+    eventBus?: ISecurityEventBus,
+    storage?: RateLimitStateStorage
+  ) {
     this.config = {
       ...config,
       windowMs: config.windowMs ?? 60000,
@@ -75,9 +211,37 @@ export class TokenBucketRateLimiter {
       keyGenerator: config.keyGenerator ?? ((ctx) => ctx.ip)
     };
     this.eventBus = eventBus;
+    this.storage = storage;
+  }
+  
+  /**
+   * 初始化速率限制器
+   * 从存储加载状态（如果有）
+   */
+  async initialize(): Promise<void> {
+    if (this.initialized) return;
+    
+    if (this.storage) {
+      this.state = await this.storage.load();
+      console.log(`[TokenBucketRateLimiter] Loaded ${this.state.size} rate limit states`);
+    }
     
     // 启动清理任务
     this.startCleanupTask();
+    this.initialized = true;
+  }
+  
+  /**
+   * 关闭速率限制器
+   * 保存状态到存储
+   */
+  async shutdown(): Promise<void> {
+    this.stop();
+    
+    if (this.storage && this.storage instanceof FileRateLimitStorage) {
+      await this.storage.flush(this.state);
+      console.log('[TokenBucketRateLimiter] State saved');
+    }
   }
   
   /**
@@ -125,6 +289,9 @@ export class TokenBucketRateLimiter {
       
       this.emitRateLimitEvent(context, key);
       
+      // 触发异步保存
+      this.persistState();
+      
       return {
         allowed: false,
         remaining: 0,
@@ -137,12 +304,27 @@ export class TokenBucketRateLimiter {
     // 消耗令牌
     state.tokens--;
     
+    // 触发异步保存
+    this.persistState();
+    
     return {
       allowed: true,
       remaining: state.tokens,
       resetTime: now + this.getTimeUntilNextRefill(state, now),
       totalLimit: this.config.maxRequests
     };
+  }
+  
+  /**
+   * 持久化状态
+   */
+  private persistState(): void {
+    if (this.storage) {
+      // 异步保存，不阻塞请求处理
+      this.storage.save(this.state).catch(err => {
+        console.error('[TokenBucketRateLimiter] Failed to persist state:', err);
+      });
+    }
   }
   
   /**
@@ -190,7 +372,16 @@ export class TokenBucketRateLimiter {
     const state = this.state.get(key);
     if (state) {
       state.blockedUntil = Date.now() + (duration || this.config.blockDuration);
+    } else {
+      // 创建新状态并封禁
+      this.state.set(key, {
+        tokens: 0,
+        lastRefill: Date.now(),
+        blockedUntil: Date.now() + (duration || this.config.blockDuration),
+        violationCount: 5
+      });
     }
+    this.persistState();
   }
   
   /**
@@ -201,6 +392,7 @@ export class TokenBucketRateLimiter {
     if (state) {
       state.blockedUntil = undefined;
       state.violationCount = 0;
+      this.persistState();
       return true;
     }
     return false;
@@ -215,6 +407,7 @@ export class TokenBucketRateLimiter {
     } else {
       this.state.clear();
     }
+    this.persistState();
   }
   
   /**

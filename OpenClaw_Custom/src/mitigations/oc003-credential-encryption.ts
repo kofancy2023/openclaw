@@ -10,6 +10,130 @@ import { SecureString } from '../utils/secure-string.js';
 import type { ICredentialStorage } from '../core/interfaces/storage.js';
 
 /**
+ * 安全文件工具
+ * 处理跨平台的文件权限设置
+ */
+class SecureFileUtils {
+  /**
+   * 确保目录存在并设置安全权限
+   * 在 Unix 系统上设置为 0o700（仅所有者可读写执行）
+   * 在 Windows 上依赖 ACL（需要手动配置）
+   */
+  static async ensureSecureDir(dirPath: string): Promise<void> {
+    // 递归创建目录
+    await fs.mkdir(dirPath, { recursive: true });
+    
+    // 在非 Windows 平台上设置权限
+    if (process.platform !== 'win32') {
+      try {
+        await fs.chmod(dirPath, 0o700);
+      } catch (error) {
+        console.warn(`[SecureFileUtils] Failed to set directory permissions for ${dirPath}:`, error);
+      }
+    }
+  }
+  
+  /**
+   * 安全写入文件
+   * 1. 确保父目录存在且有正确权限
+   * 2. 创建临时文件
+   * 3. 写入数据
+   * 4. 设置权限
+   * 5. 原子重命名
+   */
+  static async writeSecureFile(
+    filePath: string, 
+    content: string, 
+    options: { mode?: number; encoding?: BufferEncoding } = {}
+  ): Promise<void> {
+    const { mode = 0o600, encoding = 'utf8' } = options;
+    const dir = path.dirname(filePath);
+    const tempFile = `${filePath}.tmp.${Date.now()}.${process.pid}`;
+    
+    // 确保父目录存在且有正确权限
+    await this.ensureSecureDir(dir);
+    
+    try {
+      // 写入临时文件
+      await fs.writeFile(tempFile, content, { encoding, mode });
+      
+      // 在非 Windows 平台上确保权限正确
+      if (process.platform !== 'win32') {
+        await fs.chmod(tempFile, mode);
+      }
+      
+      // 原子重命名（确保文件完整性）
+      await fs.rename(tempFile, filePath);
+      
+    } catch (error) {
+      // 清理临时文件
+      try {
+        await fs.unlink(tempFile);
+      } catch {
+        // 忽略清理错误
+      }
+      throw error;
+    }
+  }
+  
+  /**
+   * 验证文件权限是否安全
+   * 返回 { isSecure: boolean, issues: string[] }
+   */
+  static async verifyFilePermissions(filePath: string): Promise<{
+    isSecure: boolean;
+    issues: string[];
+  }> {
+    const issues: string[] = [];
+    
+    try {
+      const stats = await fs.stat(filePath);
+      
+      // 检查是否为常规文件
+      if (!stats.isFile()) {
+        issues.push('Path is not a regular file');
+        return { isSecure: false, issues };
+      }
+      
+      // 在 Unix 平台上检查权限
+      if (process.platform !== 'win32') {
+        const mode = stats.mode;
+        
+        // 检查组权限
+        if (mode & 0o040) {
+          issues.push('File is readable by group');
+        }
+        if (mode & 0o020) {
+          issues.push('File is writable by group');
+        }
+        
+        // 检查其他用户权限
+        if (mode & 0o004) {
+          issues.push('File is readable by others');
+        }
+        if (mode & 0o002) {
+          issues.push('File is writable by others');
+        }
+        if (mode & 0o001) {
+          issues.push('File is executable by others');
+        }
+      }
+      
+      return {
+        isSecure: issues.length === 0,
+        issues
+      };
+      
+    } catch (error) {
+      return {
+        isSecure: false,
+        issues: [`Failed to stat file: ${error}`]
+      };
+    }
+  }
+}
+
+/**
  * 迁移报告
  */
 export interface MigrationReport {
@@ -150,12 +274,18 @@ export class CredentialEncryptionHardening {
       }
     }
     
-    // 写入加密后的配置
-    await fs.writeFile(
+    // 写入加密后的配置（使用安全文件写入）
+    await SecureFileUtils.writeSecureFile(
       filePath,
       JSON.stringify(config, null, 2),
-      { mode: 0o600 }  // 严格权限
+      { mode: 0o600 }
     );
+    
+    // 验证文件权限
+    const permissionCheck = await SecureFileUtils.verifyFilePermissions(filePath);
+    if (!permissionCheck.isSecure) {
+      console.warn(`[OC-003] File permission warnings for ${filePath}:`, permissionCheck.issues);
+    }
     
     console.log(`[OC-003] Migrated ${migratedKeys.length} keys from ${filePath}`);
     console.log(`[OC-003] Backup created at ${backupPath}`);
@@ -167,7 +297,8 @@ export class CredentialEncryptionHardening {
    * 创建备份
    */
   private async createBackup(filePath: string): Promise<string> {
-    await fs.mkdir(this.backupDir, { recursive: true, mode: 0o700 });
+    // 使用安全目录创建
+    await SecureFileUtils.ensureSecureDir(this.backupDir);
     
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
     const backupPath = path.join(
@@ -176,7 +307,11 @@ export class CredentialEncryptionHardening {
     );
     
     await fs.copyFile(filePath, backupPath);
-    await fs.chmod(backupPath, 0o600);
+    
+    // 设置备份文件权限
+    if (process.platform !== 'win32') {
+      await fs.chmod(backupPath, 0o600);
+    }
     
     return backupPath;
   }
